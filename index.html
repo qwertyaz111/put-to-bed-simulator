@@ -492,6 +492,46 @@
         return group;
     }
 
+
+    // 汎用2ボーンIK: 手先を指定位置 (bodyGroup内座標) へ。肘は後ろへ逃がす
+    function poseArmTo(arm, target) {
+        const S = arm.anchor.position;
+        const d = new THREE.Vector3().subVectors(target, S);
+        let D = d.length();
+        const maxD = (arm.upperLen + arm.foreLen) * 0.999;
+        if (D > maxD) { d.multiplyScalar(maxD / D); D = maxD; }
+        const dir = d.clone().divideScalar(D);
+        const cosA = Math.max(-1, Math.min(1, (arm.upperLen * arm.upperLen + D * D - arm.foreLen * arm.foreLen) / (2 * arm.upperLen * D)));
+        const angA = Math.acos(cosA);
+        const sideSign = arm.anchor.position.x >= 0 ? 1 : -1;
+        const w = new THREE.Vector3(sideSign * 0.8, -0.15, -0.6);
+        w.addScaledVector(dir, -w.dot(dir));
+        if (w.lengthSq() < 1e-6) w.set(0, 1, 0); else w.normalize();
+        const u = dir.clone().multiplyScalar(Math.cos(angA)).addScaledVector(w, Math.sin(angA));
+        const gamma = Math.asin(Math.max(-1, Math.min(1, u.x)));
+        const theta = Math.atan2(-u.z, -u.y);
+        arm.anchor.rotation.set(theta, 0, gamma);
+        const E = S.clone().addScaledVector(u, arm.upperLen);
+        const T = S.clone().add(d);
+        const f = new THREE.Vector3().subVectors(T, E).normalize();
+        const invQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(theta, 0, gamma)).invert();
+        const fl = f.clone().applyQuaternion(invQ);
+        const gammaE = Math.asin(Math.max(-1, Math.min(1, fl.x)));
+        const thetaE = Math.atan2(-fl.z, -fl.y);
+        arm.elbow.rotation.set(thetaE, 0, gammaE);
+    }
+
+    // 両手を自分の太ももの上に置く
+    function poseHandsOnThighs(person) {
+        const h = person.userData.height;
+        const torsoW = person.userData.torsoW;
+        const thighLen = h * 0.225;
+        person.arms.forEach((arm, i) => {
+            const side = i === 0 ? -1 : 1;
+            poseArmTo(arm, new THREE.Vector3(side * torsoW * 0.25, torsoW * 0.4 + 0.01, thighLen * 0.55));
+        });
+    }
+
     function createMannequinSitting(color, heightCm, gender, name) {
         const group = new THREE.Group();
         const h = heightCm * 0.01;
@@ -542,12 +582,20 @@
             const anchor = new THREE.Group();
             anchor.position.set(side * (torsoW * 0.6), torsoH - (torsoW * 0.15), 0);
             const armLen = h * 0.38;
-            const mesh = new THREE.Mesh(new THREE.BoxGeometry(torsoW*0.3, armLen, torsoW*0.3), bodyMat);
-            mesh.position.y = -armLen * 0.5;
-            anchor.add(mesh);
+            const upperLen = armLen * 0.54, foreLen = armLen * 0.51;
+            const upper = new THREE.Mesh(new THREE.BoxGeometry(torsoW*0.3, upperLen, torsoW*0.3), bodyMat);
+            upper.position.y = -upperLen * 0.5;
+            anchor.add(upper);
+            const elbow = new THREE.Group();
+            elbow.position.y = -upperLen;
+            const fore = new THREE.Mesh(new THREE.BoxGeometry(torsoW*0.26, foreLen, torsoW*0.26), bodyMat);
+            fore.position.y = -foreLen * 0.5;
+            elbow.add(fore);
+            anchor.add(elbow);
             bodyGroup.add(anchor);
-            group.arms.push(anchor);
-            anchor.rotation.set(0, 0, 0); 
+            group.arms.push({ anchor: anchor, elbow: elbow, upperLen: upperLen, foreLen: foreLen, totalLen: armLen });
+            anchor.rotation.set(-0.06, 0, side * 0.06);
+            elbow.rotation.set(-0.32, 0, 0);
         });
 
         const thighLen = legH * 0.5;
@@ -555,8 +603,9 @@
             const thigh = new THREE.Mesh(new THREE.BoxGeometry(torsoW*0.4, torsoW*0.4, thighLen), bodyMat);
             thigh.position.set(side * (torsoW * 0.25), torsoW * 0.2, thighLen * 0.5);
             bodyGroup.add(thigh);
-            const shin = new THREE.Mesh(new THREE.BoxGeometry(torsoW*0.4, dynamicSittingHeight, torsoW*0.4), bodyMat);
-            shin.position.set(side * (torsoW * 0.25), -dynamicSittingHeight * 0.5 + (torsoW * 0.2), thighLen);
+            const shinLen = Math.min(legH * 0.5, dynamicSittingHeight + torsoW * 0.2);
+            const shin = new THREE.Mesh(new THREE.BoxGeometry(torsoW*0.4, shinLen, torsoW*0.4), bodyMat);
+            shin.position.set(side * (torsoW * 0.25), (torsoW * 0.2) - shinLen * 0.5, thighLen);
             bodyGroup.add(shin);
         });
 
@@ -637,6 +686,8 @@
 
         stageGroup.add(personA);
         stageGroup.add(personB);
+
+        poseHandsOnThighs(personB);
 
         if (personA && personB) {
             personA.headParts.visible = (currentView !== 'A');
